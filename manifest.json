@@ -1,0 +1,18 @@
+{
+  "name": "Chrono Travail",
+  "short_name": "Chrono",
+  "description": "Pointage du temps de travail",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#07101C",
+  "theme_color": "#07101C",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
