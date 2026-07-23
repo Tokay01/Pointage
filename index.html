@@ -867,18 +867,20 @@ function renderMonthly(){
   document.getElementById('moTitle').textContent=lblRaw.charAt(0).toUpperCase()+lblRaw.slice(1);
   document.getElementById('moNextBtn').disabled=MO>=0;
   const td=todayStr(),days=[];
+
+  // Collecte toutes les données du mois
   for(let day=1;day<=31;day++){
     const d=new Date(year,month,day);if(d.getMonth()!==month)break;
     const ds=localDateStr(d),cfg=getDayCfg(ds);
-    if(cfg&&cfg.vacation){days.push({date:ds,vacation:true,d});continue;}
+    const dow=d.getDay(); // 0=dim,1=lun...6=sam
+    if(cfg&&cfg.vacation){days.push({date:ds,vacation:true,d,dow});continue;}
     const data=ds===td?T:(HST.find(h=>h.date===ds)||null);
     if(!data||!data.sessions||data.sessions.length===0)continue;
-    const sessions=data.sessions;
-    const offStart=sessions[0].start;
+    const sessions=data.sessions,offStart=sessions[0].start;
     let lunchStart=null,lunchEnd=null;
     for(let i=0;i<sessions.length;i++){
       const bt=sessions[i].breakType;
-      if(bt==='repas'||(bt===null&&sessions[i].end&&i===0&&sessions.length>1&&!bt)){
+      if(bt==='repas'||(bt===null&&sessions[i].end&&i===0&&sessions.length>1)){
         if(sessions[i].end){lunchStart=sessions[i].end;if(sessions[i+1])lunchEnd=sessions[i+1].start;}break;
       }
       if(bt===null&&sessions[i].end&&sessions[i+1]&&!lunchStart){
@@ -887,25 +889,29 @@ function renderMonthly(){
     }
     const lastS=sessions[sessions.length-1];
     const offEnd=lastS.end||(data.status==='running'?Date.now():null);
-    days.push({date:ds,d,vacation:false,offStart,lunchStart,lunchEnd,offEnd,wkMs:workedMs(data),isToday:ds===td});
+    days.push({date:ds,d,dow,vacation:false,offStart,lunchStart,lunchEnd,offEnd,wkMs:workedMs(data),isToday:ds===td});
   }
+
   const worked=days.filter(d=>!d.vacation&&d.wkMs>0);
   const toMin=ts=>{if(!ts)return null;const d=new Date(ts);return d.getHours()*60+d.getMinutes();};
   const avgMin=arr=>{const v=arr.filter(x=>x!==null);return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):null;};
   const m2hm=m=>m!==null?`${p(Math.floor(m/60))}:${p(m%60)}`:'--:--';
+
+  // Stats globales du mois
   const aStart=avgMin(worked.map(d=>toMin(d.offStart)));
   const aLS=avgMin(worked.map(d=>toMin(d.lunchStart)));
   const aLE=avgMin(worked.map(d=>toMin(d.lunchEnd)));
   const aEnd=avgMin(worked.map(d=>toMin(d.offEnd)));
   const totMs=worked.reduce((a,d)=>a+d.wkMs,0);
   const avgMs=worked.length?Math.round(totMs/worked.length):0;
+
   let html=`<div class="card">
-    <div class="sec-lbl" style="margin-bottom:11px">Statistiques</div>
+    <div class="sec-lbl" style="margin-bottom:11px">Statistiques du mois</div>
     <div class="mo-stat-grid">
       <div class="icell"><div class="lbl">Jours travaillés</div><div class="val">${worked.length}</div></div>
       <div class="icell"><div class="lbl">Total heures</div><div class="val">${fMs(totMs,false)}</div></div>
       <div class="icell"><div class="lbl">Moy. par jour</div><div class="val">${fMs(avgMs,false)}</div></div>
-      <div class="icell"><div class="lbl">Entrées</div><div class="val">${days.length}</div></div>
+      <div class="icell"><div class="lbl">Jours suivis</div><div class="val">${days.length}</div></div>
     </div>
     <div class="mo-stat-grid" style="margin-bottom:0">
       <div class="icell"><div class="lbl">🌅 Début moyen</div><div class="val" style="font-size:18px">${m2hm(aStart)}</div></div>
@@ -914,8 +920,46 @@ function renderMonthly(){
       <div class="icell"><div class="lbl">▶ Pause moy. fin</div><div class="val" style="font-size:18px">${m2hm(aLE)}</div></div>
     </div>
   </div>`;
-  if(days.length===0){html+='<div class="empty">Aucune donnée pour ce mois</div>';}
-  else{
+
+  // ── Moyennes par jour de la semaine ──────────────────────────
+  // Lundi→Vendredi→Samedi→Dimanche (ordre lundi en premier)
+  const DOW_ORDER=[1,2,3,4,5,6,0];
+  const DOW_LBL=['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
+  const byDow={};
+  worked.forEach(d=>{
+    if(!byDow[d.dow])byDow[d.dow]=[];
+    byDow[d.dow].push(d);
+  });
+  const dowsWithData=DOW_ORDER.filter(dow=>byDow[dow]&&byDow[dow].length>0);
+  if(dowsWithData.length>0){
+    html+=`<div class="card"><div class="sec-lbl" style="margin-bottom:11px">Moyennes par jour de la semaine</div>`;
+    html+=dowsWithData.map(dow=>{
+      const grp=byDow[dow];
+      const dStart=m2hm(avgMin(grp.map(d=>toMin(d.offStart))));
+      const dLS=avgMin(grp.map(d=>toMin(d.lunchStart)));
+      const dLE=avgMin(grp.map(d=>toMin(d.lunchEnd)));
+      const dEnd=m2hm(avgMin(grp.map(d=>toMin(d.offEnd))));
+      const dWk=Math.round(grp.reduce((a,d)=>a+d.wkMs,0)/grp.length);
+      const hasLunch=dLS!==null&&dLE!==null;
+      const timeline=hasLunch
+        ?`${dStart} → ${m2hm(dLS)} ⏸ ${m2hm(dLE)} → ${dEnd}`
+        :`${dStart} → ${dEnd}`;
+      return`<div style="display:flex;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:12px;width:76px;flex-shrink:0;color:var(--text)">${DOW_LBL[dow]}</div>
+        <div style="flex:1;font-family:'Courier New',monospace;font-size:11px;color:var(--sub)">${timeline}</div>
+        <div style="font-family:'Courier New',monospace;font-size:13px;font-weight:700;color:var(--green);flex-shrink:0;text-align:right">
+          ${fMs(dWk,false)}<br><span style="font-size:9px;color:var(--muted)">${grp.length}×</span>
+        </div>
+      </div>`;
+    }).join('');
+    html+=`</div>`;
+  }
+
+  // ── Liste détaillée par jour ──────────────────────────────────
+  if(days.length===0){
+    html+='<div class="empty">Aucune donnée pour ce mois</div>';
+  } else {
+    html+=`<div class="sec-lbl" style="margin-top:4px;margin-bottom:8px">Détail journalier</div>`;
     html+=days.slice().reverse().map(d=>{
       const dLbl=new Date(d.date+'T12:00:00').toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit',month:'2-digit'});
       if(d.vacation)return`<div class="mo-day"><div class="mo-dname">${dLbl}</div><div style="font-size:12px;color:var(--amber)">Congé 🏖</div></div>`;
