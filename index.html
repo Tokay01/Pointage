@@ -103,13 +103,6 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 .wt-diff{font-size:17px;font-weight:700;margin-top:5px;}
 .global-card{text-align:center;border-top:3px solid var(--violet);}
 .global-val{font-family:'Courier New',monospace;font-size:44px;font-weight:700;letter-spacing:-1px;}
-/* MENSUEL */
-.mo-day{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 13px;margin-bottom:7px;display:flex;align-items:center;gap:10px;}
-.mo-day.today{border-color:var(--blue);}
-.mo-dname{font-weight:700;font-size:12px;width:62px;flex-shrink:0;color:var(--sub);}
-.mo-timeline{font-family:'Courier New',monospace;font-size:11px;color:var(--sub);flex:1;}
-.mo-wk{font-family:'Courier New',monospace;font-size:13px;font-weight:700;flex-shrink:0;}
-.mo-stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:9px;}
 /* ASTREINTE */
 .ast-disp{font-family:'Courier New',monospace;font-size:56px;font-weight:700;text-align:center;color:var(--amber);padding:12px 0;letter-spacing:-2px;}
 .ast-disp.run{animation:pfast 2s infinite;}
@@ -164,7 +157,6 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
   <button class="tab active" onclick="goTab('pointage',this)">⏱ Pointage</button>
   <button class="tab" onclick="goTab('reglages',this)">⚙️ Réglages</button>
   <button class="tab" onclick="goTab('bilan',this)">📊 Bilan</button>
-  <button class="tab" onclick="goTab('mensuel',this)">📅 Mensuel</button>
   <button class="tab" onclick="goTab('astreinte',this)">🔴 Astreinte</button>
 </nav>
 
@@ -189,6 +181,8 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
       <button class="btn btn-teal"   id="bPauP" onclick="doPause('pause')"  disabled>⏸ Pause</button>
       <button class="btn btn-blue"   id="bRep"  onclick="doReprise()"       disabled>▶ Reprendre</button>
       <button class="btn btn-red"    id="bFin"  onclick="doFin()"           disabled>⏹ Fin</button>
+      <button class="btn btn-orange" id="bFinDirect" onclick="doFinDirect()" disabled>⏹ Fin direct</button>
+      <button class="btn btn-ghost" id="bTelework" onclick="toggleTelework()">🏠 Télétravail : OFF</button>
     </div>
   </div>
 
@@ -275,16 +269,6 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
     <button class="btn btn-ghost btn-sm" onclick="shiftWeek(1)">Suiv. ▶</button>
   </div>
   <div id="bilanWrap"></div>
-</div>
-
-<!-- ══ MENSUEL ══ -->
-<div class="panel" id="tab-mensuel">
-  <div class="week-nav">
-    <button class="btn btn-ghost btn-sm" onclick="shiftMonth(-1)">◀ Préc.</button>
-    <span class="week-title" id="moTitle">—</span>
-    <button class="btn btn-ghost btn-sm" id="moNextBtn" onclick="shiftMonth(1)">Suiv. ▶</button>
-  </div>
-  <div id="moWrap"></div>
 </div>
 
 <!-- ══ ASTREINTE ══ -->
@@ -387,7 +371,7 @@ function defCfg(){
     }
   };
 }
-function defToday(){ return{date:todayStr(),departureTime:null,arrivalTime:null,sessions:[],status:'idle'}; }
+function defToday(){ return{date:todayStr(),departureTime:null,arrivalTime:null,sessions:[],status:'idle',telework:false,finDirect:false}; }
 function defAst(){   return{status:'idle',currentStart:null,history:[]}; }
 
 // ── ÉTAT GLOBAL ───────────────────────────────────────────────
@@ -417,11 +401,13 @@ function migrateCfg(cfg){
   return cfg;
 }
 
-function computeWeekDiff(mondayKey){
+function computeWeekDiff(mondayKey, includeToday=true){
   let totW=0,totE=0; const td=todayStr(),nowTs=Date.now();
   for(let i=0;i<7;i++){
     const d=new Date(mondayKey+'T12:00:00'); d.setDate(d.getDate()+i);
     const ds=localDateStr(d),isToday=ds===td,isFut=d.getTime()>nowTs&&!isToday;
+    // Le bilan global ne prend en compte la journée courante qu'une fois terminée.
+    if(isToday&&!includeToday)continue;
     if(isFut)continue;
     const cfg=getDayCfg(ds),exp=expectedMs(ds);
     const data=isToday?T:(HST.find(h=>h.date===ds)||null);
@@ -449,7 +435,7 @@ function load(){
   HST=JSON.parse(localStorage.getItem('ct_hst')||'[]');
   AST=JSON.parse(localStorage.getItem('ct_ast')||'null')||defAst();
   const stored=JSON.parse(localStorage.getItem('ct_today')||'null');
-  if(stored&&stored.date===todayStr()){T=stored;}
+  if(stored&&stored.date===todayStr()){T=stored;T.telework=!!T.telework;T.finDirect=!!T.finDirect;}
   else{
     if(stored&&stored.sessions&&stored.sessions.length>0)archiveDay(stored);
     T=defToday();saveToday();
@@ -469,12 +455,20 @@ function archiveDay(d){
 }
 
 // ── CALCULS ───────────────────────────────────────────────────
-function commMs(){return(CFG.commuteMinutes||25)*60000;}
+function commMs(){return T&&T.telework?0:(CFG.commuteMinutes||25)*60000;}
 function isCommuting(){return T.status==='running'&&T.sessions.length>0&&Date.now()<T.sessions[0].start;}
 
 function workedMs(d){
-  const src=d||T;let tot=0;const now=Date.now();
-  for(const s of src.sessions){const e=s.end||(src.status==='running'?now:s.start);tot+=Math.max(0,e-s.start);}
+  const src=d||T;
+  let tot=0;
+  for(const s of (src.sessions||[])){
+    // Une session ouverte continue de compter en temps réel pour le chrono,
+    // mais n'est validée dans le bilan global qu'après le statut « done ».
+    const end=(s.end!==null && s.end!==undefined)
+      ?s.end
+      :(src===T && src.status==='running'?Date.now():null);
+    if(end!==null)tot+=Math.max(0,end-s.start);
+  }
   return tot;
 }
 
@@ -507,8 +501,8 @@ function fDiff(ms){
 // ── ACTIONS TIMER ─────────────────────────────────────────────
 function doDepart(){
   const now=Date.now(),offS=now+commMs();
-  T.departureTime=now;T.sessions.push({start:offS,end:null,breakType:null});T.status='running';
-  saveToday();ui();toast(`▶ Départ ${ts2t(now)} — Début officiel ${ts2t(offS)}`);
+  T.departureTime=T.telework?null:now;T.sessions.push({start:offS,end:null,breakType:null});T.status='running';
+  saveToday();ui();toast(T.telework?'▶ Télétravail démarré':`▶ Départ ${ts2t(now)} — Début officiel ${ts2t(offS)}`);
 }
 function doPause(type='pause'){
   if(T.status!=='running')return;
@@ -522,13 +516,23 @@ function doReprise(){
   T.sessions.push({start:Date.now(),end:null,breakType:null});T.status='running';
   saveToday();ui();toast('▶ Reprise');
 }
-function doFin(){
+function finishDay(direct=false){
   if(!['running','paused'].includes(T.status))return;
-  const now=Date.now(),offE=now-commMs();
-  T.arrivalTime=now;
-  const l=T.sessions[T.sessions.length-1];if(!l.end)l.end=offE;
+  const now=Date.now();
+  const offE=(direct||T.telework)?now:now-commMs();
+  T.arrivalTime=(direct||T.telework)?null:now;
+  T.finDirect=!!direct;
+  const l=T.sessions[T.sessions.length-1];
+  if(l&&!l.end)l.end=Math.max(l.start,offE);
   T.status='done';saveToday();archiveDay(T);ui();
-  toast(`⏹ Fin officielle ${ts2t(offE)} — ${fDiff(workedMs()-expectedMs())}`);
+  toast(`⏹ Journée terminée — ${fDiff(workedMs()-expectedMs())}`);
+}
+function doFin(){finishDay(false);}
+function doFinDirect(){finishDay(true);}
+function toggleTelework(){
+  if(T.status!=='idle'){toast('⚠️ Le mode Télétravail se choisit avant le départ');return;}
+  T.telework=!T.telework;saveToday();ui();
+  toast(T.telework?'🏠 Mode Télétravail activé — trajets supprimés':'🚗 Mode trajet activé');
 }
 function resetDay(){T=defToday();saveToday();ui();toast('🗑 Journée réinitialisée');}
 
@@ -541,6 +545,10 @@ function openEditTimes(){
     if(i>0){
       const prev=t.sessions[i-1],lbl=prev.breakType==='repas'?'▶ Fin pause repas':'▶ Fin pause';
       html+=eFld(`ef-ss-${i}`,lbl,ts2t(s.start),'');
+    } else if(t.telework){
+      // En télétravail, pas d'heure de départ maison : proposer directement
+      // la correction de l'heure réelle de début de travail.
+      html+=eFld('ef-ss-0','💼 Début de travail (télétravail)',ts2t(s.start),'');
     }
     if(s.end!==null){
       const bt=s.breakType,isLast=i===t.sessions.length-1;
@@ -584,7 +592,7 @@ function saveEditTimes(){
       const v=toTS(g(`ef-se-${i}`));if(v!==null)s.end=v;
       const tp=g(`ef-se-${i}-type`);if(tp&&s.breakType)s.breakType=tp;
     }
-    if(i>0){const v=toTS(g(`ef-ss-${i}`));if(v!==null)s.start=v;}
+    if(i>0||(i===0&&T.telework)){const v=toTS(g(`ef-ss-${i}`));if(v!==null)s.start=v;}
   });
   const arr=toTS(g('ef-arr'));
   if(arr!==null&&T.arrivalTime!==null){
@@ -649,7 +657,7 @@ function saveAstEdit(){
 
 // ── UI PRINCIPALE ─────────────────────────────────────────────
 function ui(){
-  const st=T.status,cm=CFG.commuteMinutes||25,commuting=isCommuting();
+  const st=T.status,cm=T.telework?0:(CFG.commuteMinutes||25),commuting=!T.telework&&isCommuting();
   const wk=workedMs(),exp=expectedMs();
   const pct=exp>0?Math.min(1,wk/exp):0;
   const arc=document.getElementById('gArc');
@@ -680,12 +688,14 @@ function ui(){
   document.getElementById('bPauP').disabled=!running;
   document.getElementById('bRep').disabled=!paused;
   document.getElementById('bFin').disabled=(!running&&!paused)||moving;
+  document.getElementById('bFinDirect').disabled=(!running&&!paused);
+  const btw=document.getElementById('bTelework');btw.textContent=T.telework?'🏠 Télétravail : ON':'🏠 Télétravail : OFF';btw.className='btn '+(T.telework?'btn-violet':'btn-ghost');btw.disabled=st!=='idle';
   document.getElementById('btnEdit').style.display=st!=='idle'?'inline-flex':'none';
   document.getElementById('cL1').textContent=cm;document.getElementById('cL2').textContent=cm;
-  document.getElementById('iDep').textContent=ts2t(T.departureTime);
+  document.getElementById('iDep').textContent=T.telework?'Télétravail':ts2t(T.departureTime);
   document.getElementById('iDeb').textContent=T.sessions[0]?ts2t(T.sessions[0].start):'--:--';
   document.getElementById('iRet').textContent=ts2t(T.arrivalTime);
-  document.getElementById('iFin').textContent=T.arrivalTime?ts2t(T.arrivalTime-commMs()):'--:--';
+  document.getElementById('iFin').textContent=T.arrivalTime?ts2t(T.arrivalTime-commMs()):(T.status==='done'?ts2t(T.sessions[T.sessions.length-1]?.end):'--:--');
   document.getElementById('bjW').textContent=fMs(wk);
   if(exp<0){
     document.getElementById('bjE').textContent='Congé 🏖';
@@ -807,7 +817,7 @@ function saveAsNewLock(){
 
 // ── BILAN HEBDO ───────────────────────────────────────────────
 function renderGlobalBilan(){
-  const live=(CFG.globalBalanceMs||0)+computeWeekDiff(CFG.currentWeekKey);
+  const live=(CFG.globalBalanceMs||0)+computeWeekDiff(CFG.currentWeekKey,T.status==='done');
   const el=document.getElementById('globalVal');
   el.textContent=fDiff(live);el.style.color=live>=0?'var(--green)':'var(--red)';
   const since=document.getElementById('globalSince');
@@ -816,7 +826,7 @@ function renderGlobalBilan(){
     :'Cumul depuis le début';
 }
 function resetGlobalBalance(){
-  CFG.globalBalanceMs=-computeWeekDiff(CFG.currentWeekKey);CFG.globalBalanceSince=todayStr();
+  CFG.globalBalanceMs=-computeWeekDiff(CFG.currentWeekKey,T.status==='done');CFG.globalBalanceSince=todayStr();
   saveCfgRaw();renderBilan();toast('🔄 Bilan global réinitialisé');
 }
 function renderBilan(){
@@ -859,123 +869,6 @@ function renderBilan(){
 }
 function shiftWeek(d){WK+=d;renderBilan();}
 
-// ── BILAN MENSUEL ─────────────────────────────────────────────
-function renderMonthly(){
-  const now=new Date(),target=new Date(now.getFullYear(),now.getMonth()+MO,1);
-  const year=target.getFullYear(),month=target.getMonth();
-  const lblRaw=target.toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
-  document.getElementById('moTitle').textContent=lblRaw.charAt(0).toUpperCase()+lblRaw.slice(1);
-  document.getElementById('moNextBtn').disabled=MO>=0;
-  const td=todayStr(),days=[];
-
-  // Collecte toutes les données du mois
-  for(let day=1;day<=31;day++){
-    const d=new Date(year,month,day);if(d.getMonth()!==month)break;
-    const ds=localDateStr(d),cfg=getDayCfg(ds);
-    const dow=d.getDay(); // 0=dim,1=lun...6=sam
-    if(cfg&&cfg.vacation){days.push({date:ds,vacation:true,d,dow});continue;}
-    const data=ds===td?T:(HST.find(h=>h.date===ds)||null);
-    if(!data||!data.sessions||data.sessions.length===0)continue;
-    const sessions=data.sessions,offStart=sessions[0].start;
-    let lunchStart=null,lunchEnd=null;
-    for(let i=0;i<sessions.length;i++){
-      const bt=sessions[i].breakType;
-      if(bt==='repas'||(bt===null&&sessions[i].end&&i===0&&sessions.length>1)){
-        if(sessions[i].end){lunchStart=sessions[i].end;if(sessions[i+1])lunchEnd=sessions[i+1].start;}break;
-      }
-      if(bt===null&&sessions[i].end&&sessions[i+1]&&!lunchStart){
-        lunchStart=sessions[i].end;lunchEnd=sessions[i+1].start;break;
-      }
-    }
-    const lastS=sessions[sessions.length-1];
-    const offEnd=lastS.end||(data.status==='running'?Date.now():null);
-    days.push({date:ds,d,dow,vacation:false,offStart,lunchStart,lunchEnd,offEnd,wkMs:workedMs(data),isToday:ds===td});
-  }
-
-  const worked=days.filter(d=>!d.vacation&&d.wkMs>0);
-  const toMin=ts=>{if(!ts)return null;const d=new Date(ts);return d.getHours()*60+d.getMinutes();};
-  const avgMin=arr=>{const v=arr.filter(x=>x!==null);return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):null;};
-  const m2hm=m=>m!==null?`${p(Math.floor(m/60))}:${p(m%60)}`:'--:--';
-
-  // Stats globales du mois
-  const aStart=avgMin(worked.map(d=>toMin(d.offStart)));
-  const aLS=avgMin(worked.map(d=>toMin(d.lunchStart)));
-  const aLE=avgMin(worked.map(d=>toMin(d.lunchEnd)));
-  const aEnd=avgMin(worked.map(d=>toMin(d.offEnd)));
-  const totMs=worked.reduce((a,d)=>a+d.wkMs,0);
-  const avgMs=worked.length?Math.round(totMs/worked.length):0;
-
-  let html=`<div class="card">
-    <div class="sec-lbl" style="margin-bottom:11px">Statistiques du mois</div>
-    <div class="mo-stat-grid">
-      <div class="icell"><div class="lbl">Jours travaillés</div><div class="val">${worked.length}</div></div>
-      <div class="icell"><div class="lbl">Total heures</div><div class="val">${fMs(totMs,false)}</div></div>
-      <div class="icell"><div class="lbl">Moy. par jour</div><div class="val">${fMs(avgMs,false)}</div></div>
-      <div class="icell"><div class="lbl">Jours suivis</div><div class="val">${days.length}</div></div>
-    </div>
-    <div class="mo-stat-grid" style="margin-bottom:0">
-      <div class="icell"><div class="lbl">🌅 Début moyen</div><div class="val" style="font-size:18px">${m2hm(aStart)}</div></div>
-      <div class="icell"><div class="lbl">🌆 Fin moyenne</div><div class="val" style="font-size:18px">${m2hm(aEnd)}</div></div>
-      <div class="icell"><div class="lbl">⏸ Pause moy. début</div><div class="val" style="font-size:18px">${m2hm(aLS)}</div></div>
-      <div class="icell"><div class="lbl">▶ Pause moy. fin</div><div class="val" style="font-size:18px">${m2hm(aLE)}</div></div>
-    </div>
-  </div>`;
-
-  // ── Moyennes par jour de la semaine ──────────────────────────
-  // Lundi→Vendredi→Samedi→Dimanche (ordre lundi en premier)
-  const DOW_ORDER=[1,2,3,4,5,6,0];
-  const DOW_LBL=['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
-  const byDow={};
-  worked.forEach(d=>{
-    if(!byDow[d.dow])byDow[d.dow]=[];
-    byDow[d.dow].push(d);
-  });
-  const dowsWithData=DOW_ORDER.filter(dow=>byDow[dow]&&byDow[dow].length>0);
-  if(dowsWithData.length>0){
-    html+=`<div class="card"><div class="sec-lbl" style="margin-bottom:11px">Moyennes par jour de la semaine</div>`;
-    html+=dowsWithData.map(dow=>{
-      const grp=byDow[dow];
-      const dStart=m2hm(avgMin(grp.map(d=>toMin(d.offStart))));
-      const dLS=avgMin(grp.map(d=>toMin(d.lunchStart)));
-      const dLE=avgMin(grp.map(d=>toMin(d.lunchEnd)));
-      const dEnd=m2hm(avgMin(grp.map(d=>toMin(d.offEnd))));
-      const dWk=Math.round(grp.reduce((a,d)=>a+d.wkMs,0)/grp.length);
-      const hasLunch=dLS!==null&&dLE!==null;
-      const timeline=hasLunch
-        ?`${dStart} → ${m2hm(dLS)} ⏸ ${m2hm(dLE)} → ${dEnd}`
-        :`${dStart} → ${dEnd}`;
-      return`<div style="display:flex;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)">
-        <div style="font-weight:700;font-size:12px;width:76px;flex-shrink:0;color:var(--text)">${DOW_LBL[dow]}</div>
-        <div style="flex:1;font-family:'Courier New',monospace;font-size:11px;color:var(--sub)">${timeline}</div>
-        <div style="font-family:'Courier New',monospace;font-size:13px;font-weight:700;color:var(--green);flex-shrink:0;text-align:right">
-          ${fMs(dWk,false)}<br><span style="font-size:9px;color:var(--muted)">${grp.length}×</span>
-        </div>
-      </div>`;
-    }).join('');
-    html+=`</div>`;
-  }
-
-  // ── Liste détaillée par jour ──────────────────────────────────
-  if(days.length===0){
-    html+='<div class="empty">Aucune donnée pour ce mois</div>';
-  } else {
-    html+=`<div class="sec-lbl" style="margin-top:4px;margin-bottom:8px">Détail journalier</div>`;
-    html+=days.slice().reverse().map(d=>{
-      const dLbl=new Date(d.date+'T12:00:00').toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit',month:'2-digit'});
-      if(d.vacation)return`<div class="mo-day"><div class="mo-dname">${dLbl}</div><div style="font-size:12px;color:var(--amber)">Congé 🏖</div></div>`;
-      const wkC=d.wkMs>0?'var(--green)':'var(--red)';
-      const tl=[ts2t(d.offStart),d.lunchStart?`⏸${ts2t(d.lunchStart)}`:null,d.lunchEnd?`▶${ts2t(d.lunchEnd)}`:null,ts2t(d.offEnd)].filter(Boolean).join(' ');
-      return`<div class="mo-day ${d.isToday?'today':''}">
-        <div class="mo-dname">${dLbl}</div>
-        <div class="mo-timeline">${tl}</div>
-        <div class="mo-wk" style="color:${wkC}">${fMs(d.wkMs,false)}</div>
-      </div>`;
-    }).join('');
-  }
-  document.getElementById('moWrap').innerHTML=html;
-}
-function shiftMonth(d){MO+=d;if(MO>0)MO=0;renderMonthly();}
-
 // ── ASTREINTE RENDER ──────────────────────────────────────────
 function renderAst(){
   const run=AST.status==='running';
@@ -1002,40 +895,46 @@ function renderAst(){
 }
 
 // ── NOTIFICATIONS (setTimeout précis) ─────────────────────────
-function reqNotifs(){
-  if(!('Notification'in window)){toast('❌ Non supporté');return;}
-  Notification.requestPermission().then(r=>{
-    notifOK=r==='granted';
-    const b=document.getElementById('notifBtn');
-    b.className='notif-btn'+(notifOK?' on':'');b.textContent=notifOK?'🔔 ON':'🔕 OFF';
-    if(notifOK)scheduleNotifs();
-    toast(notifOK?'✅ Notifications activées':'❌ Permission refusée');
-  });
+function updateNotifButton(){
+  const granted=('Notification'in window)&&Notification.permission==='granted';
+  notifOK=granted;
+  const b=document.getElementById('notifBtn');
+  b.className='notif-btn'+(granted?' on':'');
+  b.textContent=granted?'🔔 ON':'🔕 OFF';
+}
+async function reqNotifs(){
+  if(!('Notification'in window)){toast('❌ Notifications non prises en charge par ce navigateur');return;}
+  try{
+    const permission=Notification.permission==='default'?await Notification.requestPermission():Notification.permission;
+    notifOK=permission==='granted';updateNotifButton();
+    if(notifOK){scheduleNotifs();toast('✅ Notifications activées');}
+    else toast('❌ Autorisation des notifications refusée');
+  }catch(e){toast('❌ Impossible d’activer les notifications');}
 }
 function scheduleNotifs(){
   notifTimers.forEach(id=>clearTimeout(id));notifTimers=[];
-  if(!notifOK)return;
+  updateNotifButton();
+  if(!notifOK||T.status==='done')return;
   const ds=getDayCfg(todayStr());if(!ds||ds.vacation)return;
-  const now=new Date();
+  const now=Date.now();
   const at=(h,m,title,body)=>{
-    const t=new Date(now.getFullYear(),now.getMonth(),now.getDate(),h,m,0,0);
-    const delay=t.getTime()-Date.now();
+    const target=new Date();target.setHours(h,m,0,0);
+    const delay=target.getTime()-now;
     if(delay>0&&delay<86400000)notifTimers.push(setTimeout(()=>sendNotif(title,body),delay));
   };
-  const[sh,sm]=ds.ms.split(':').map(Number);
-  let nh=sh,nm=sm-30;if(nm<0){nh--;nm+=60;}
-  at(nh,nm,'⏱ Bientôt l\'heure de partir !',`Début de journée dans 30 min (${ds.ms})`);
-  const[eh,em]=ds.es.split(':').map(Number);
-  let fh=eh,fm=em-30;if(fm<0){fh--;fm+=60;}
-  at(fh,fm,'⏱ Fin de journée dans 30 min !',`Fin officielle prévue à ${ds.es}`);
+  const before30=time=>{let mins=(t2m(time)-30+1440)%1440;return [Math.floor(mins/60),mins%60];};
+  const [sh,sm]=before30(ds.ms);
+  at(sh,sm,'⏱ Bientôt l’heure de partir !',`Début de journée dans 30 min (${ds.ms})`);
+  const [eh,em]=before30(ds.es);
+  at(eh,em,'⏱ Fin de journée dans 30 min !',`Fin officielle prévue à ${ds.es}`);
 }
-function sendNotif(title,body){
-  if(!notifOK)return;
-  if(navigator.serviceWorker&&navigator.serviceWorker.controller){
-    navigator.serviceWorker.controller.postMessage({type:'NOTIFY',title,body,tag:'chrono'});
-  } else {
-    try{new Notification(title,{body,icon:'/icon.svg'});}catch(e){}
-  }
+async function sendNotif(title,body){
+  if(!notifOK||Notification.permission!=='granted')return;
+  try{
+    const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();
+    if(reg&&reg.showNotification)await reg.showNotification(title,{body,icon:'/icon.svg',tag:'chrono-'+title});
+    else new Notification(title,{body,icon:'/icon.svg',tag:'chrono-'+title});
+  }catch(e){}
 }
 
 // ── EXPORT / IMPORT ───────────────────────────────────────────
@@ -1080,7 +979,6 @@ function goTab(name,btn){
   document.getElementById('tab-'+name).classList.add('active');if(btn)btn.classList.add('active');
   if(name==='reglages'){RW=0;loadSettingsDraft();renderSettingsUI();}
   if(name==='bilan')renderBilan();
-  if(name==='mensuel')renderMonthly();
   if(name==='astreinte')renderAst();
 }
 
@@ -1100,6 +998,7 @@ function tick(){
   if(T.date!==todayStr()){archiveDay(T);T=defToday();saveToday();ui();scheduleNotifs();}
   rolloverWeeks();
 }
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleNotifs();});
 
 // ── SERVICE WORKER ────────────────────────────────────────────
 function registerSW(){
@@ -1115,12 +1014,7 @@ load();
 registerSW();
 ui();
 setInterval(tick,1000);
-if(Notification.permission==='granted'){
-  notifOK=true;
-  document.getElementById('notifBtn').className='notif-btn on';
-  document.getElementById('notifBtn').textContent='🔔 ON';
-  scheduleNotifs();
-}
+if('Notification'in window){updateNotifButton();if(notifOK)scheduleNotifs();}
 </script>
 </body>
 </html>
